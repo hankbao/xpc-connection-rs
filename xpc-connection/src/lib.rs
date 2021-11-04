@@ -13,12 +13,12 @@ pub use message::*;
 
 use block::ConcreteBlock;
 use futures::{
-    channel::mpsc::{unbounded as unbounded_channel, UnboundedReceiver, UnboundedSender},
-    Stream,
+    sync::mpsc::{unbounded as unbounded_channel, UnboundedReceiver, UnboundedSender},
+    Async, Poll, Stream,
 };
 use std::ffi::CStr;
+#[allow(unused_imports)]
 use std::{ffi::c_void, ops::Deref};
-use std::{pin::Pin, task::Poll};
 use xpc_connection_sys::{
     xpc_connection_cancel, xpc_connection_create_mach_service, xpc_connection_resume,
     xpc_connection_send_message, xpc_connection_set_event_handler, xpc_connection_t, xpc_object_t,
@@ -76,12 +76,10 @@ impl Drop for XpcListener {
 
 impl Stream for XpcListener {
     type Item = XpcClient;
+    type Error = ();
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        Stream::poll_next(Pin::new(&mut self.receiver), cx)
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        self.receiver.poll()
     }
 }
 
@@ -151,18 +149,16 @@ impl Drop for XpcClient {
 
 impl Stream for XpcClient {
     type Item = Message;
+    type Error = ();
 
     /// `Poll::Ready(None)` returned in place of `MessageError::ConnectionInvalid`
     /// as it's not recoverable. `MessageError::ConnectionInterrupted` should
     /// be treated as recoverable.
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        match Stream::poll_next(Pin::new(&mut self.receiver), cx) {
-            Poll::Ready(Some(Message::Error(MessageError::ConnectionInvalid))) => {
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        match self.receiver.poll() {
+            Ok(Async::Ready(Some(Message::Error(MessageError::ConnectionInvalid)))) => {
                 self.event_handler_is_running = false;
-                Poll::Ready(None)
+                Ok(Async::Ready(None))
             }
             v => v,
         }
