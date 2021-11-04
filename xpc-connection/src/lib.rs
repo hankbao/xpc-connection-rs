@@ -242,8 +242,9 @@ impl XpcClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::{executor::block_on, StreamExt};
+    use futures::Stream;
     use std::{collections::HashMap, ffi::CString};
+    use tokio::runtime::current_thread::Runtime;
     use xpc_connection_sys::xpc_connection_cancel;
 
     // This also tests that the event handler block is only freed once, as a
@@ -251,14 +252,15 @@ mod tests {
     #[test]
     fn event_handler_receives_error_on_close() {
         let mach_port_name = CString::new("com.apple.blued").unwrap();
-        let mut client = XpcClient::connect(&mach_port_name);
+        let client = XpcClient::connect(&mach_port_name);
 
         // Cancelling the connection will cause the event handler to be called
         // with an error message. This will happen under normal circumstances,
         // for example if the service invalidates the connection.
         unsafe { xpc_connection_cancel(client.connection) };
 
-        if let Some(message) = block_on(client.next()) {
+        let mut rt = Runtime::new().unwrap();
+        if let Ok((Some(message), _)) = rt.block_on(client.take(1).into_future()) {
             panic!("Expected `None`, but received {:?}", message);
         }
     }
@@ -266,7 +268,7 @@ mod tests {
     #[test]
     fn stream_closed_on_drop() -> Result<(), Box<dyn std::error::Error>> {
         let mach_port_name = CString::new("com.apple.blued")?;
-        let mut client = XpcClient::connect(&mach_port_name);
+        let client = XpcClient::connect(&mach_port_name);
 
         let message = Message::Dictionary({
             let mut dictionary = HashMap::new();
@@ -291,26 +293,24 @@ mod tests {
 
         let mut count = 0;
 
-        loop {
-            match block_on(client.next()) {
-                Some(Message::Error(error)) => {
+        let mut rt = Runtime::new().unwrap();
+        let conn = client.connection;
+        let _ = rt.block_on(client.for_each(|msg| {
+            match msg {
+                Message::Error(error) => {
                     panic!("Error: {:?}", error);
                 }
-                Some(message) => {
+                message => {
                     println!("Received message: {:?}", message);
                     count += 1;
 
                     // Explained in `event_handler_receives_error_on_close`.
-                    unsafe { xpc_connection_cancel(client.connection) };
-                }
-                None => {
-                    // We can't be sure how many buffered messages we'll receive
-                    // from blued before the connection is cancelled, but it's
-                    // safe to say it should be less than 5.
-                    assert!(count < 5);
-                    return Ok(());
+                    unsafe { xpc_connection_cancel(conn) };
                 }
             }
-        }
+            Ok(())
+        }));
+
+        Ok(())
     }
 }
