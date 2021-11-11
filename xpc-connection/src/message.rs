@@ -11,18 +11,19 @@ use std::{
 use block::{Block, ConcreteBlock};
 
 use xpc_connection_sys::{
-    _xpc_error_connection_interrupted, _xpc_type_activity, _xpc_type_array, _xpc_type_bool,
+    _xpc_error_connection_interrupted, _xpc_error_connection_invalid, _xpc_error_key_description,
+    _xpc_error_termination_imminent, _xpc_type_activity, _xpc_type_array, _xpc_type_bool,
     _xpc_type_connection, _xpc_type_data, _xpc_type_date, _xpc_type_dictionary, _xpc_type_double,
     _xpc_type_endpoint, _xpc_type_error, _xpc_type_fd, _xpc_type_int64, _xpc_type_null,
     _xpc_type_shmem, _xpc_type_string, _xpc_type_uint64, _xpc_type_uuid, uuid_t,
     xpc_array_append_value, xpc_array_apply, xpc_array_create, xpc_array_get_count,
     xpc_bool_create, xpc_bool_get_value, xpc_connection_t, xpc_data_create, xpc_data_get_bytes_ptr,
     xpc_data_get_length, xpc_date_create, xpc_date_get_value, xpc_dictionary_apply,
-    xpc_dictionary_create, xpc_dictionary_get_count, xpc_dictionary_set_value, xpc_double_create,
-    xpc_double_get_value, xpc_fd_create, xpc_fd_dup, xpc_get_type, xpc_int64_create,
-    xpc_int64_get_value, xpc_null_create, xpc_object_t, xpc_release, xpc_retain, xpc_string_create,
-    xpc_string_get_string_ptr, xpc_uint64_create, xpc_uint64_get_value, xpc_uuid_create,
-    xpc_uuid_get_bytes,
+    xpc_dictionary_create, xpc_dictionary_get_count, xpc_dictionary_get_string,
+    xpc_dictionary_set_value, xpc_double_create, xpc_double_get_value, xpc_fd_create, xpc_fd_dup,
+    xpc_get_type, xpc_int64_create, xpc_int64_get_value, xpc_null_create, xpc_object_t,
+    xpc_release, xpc_retain, xpc_string_create, xpc_string_get_string_ptr, xpc_uint64_create,
+    xpc_uint64_get_value, xpc_uuid_create, xpc_uuid_get_bytes,
 };
 
 use crate::{XpcClient, XpcListener};
@@ -119,6 +120,11 @@ pub enum MessageError {
     ConnectionInterrupted,
     /// The connection was closed and cannot be recovered.
     ConnectionInvalid,
+    /// The runtime has determined that the program should exit and that
+    /// all outstanding transactions must be wound down, and no new transactions can be opened.
+    TerminationImminent,
+    /// Unknown error with a description
+    Unknown(String),
 }
 
 pub fn xpc_object_to_message(xpc_object: xpc_object_t) -> Message {
@@ -203,8 +209,24 @@ pub fn xpc_object_to_message(xpc_object: xpc_object_t) -> Message {
                 &_xpc_error_connection_interrupted as *const _ as *const _,
             ) {
                 Message::Error(MessageError::ConnectionInterrupted)
-            } else {
+            } else if std::ptr::eq(
+                xpc_object as *const _,
+                &_xpc_error_connection_invalid as *const _ as *const _,
+            ) {
                 Message::Error(MessageError::ConnectionInvalid)
+            } else if std::ptr::eq(
+                xpc_object as *const _,
+                &_xpc_error_termination_imminent as *const _ as *const _,
+            ) {
+                Message::Error(MessageError::TerminationImminent)
+            } else {
+                let s = xpc_dictionary_get_string(xpc_object, _xpc_error_key_description);
+                if !s.is_null() {
+                    let desc = String::from(CStr::from_ptr(s).to_str().unwrap());
+                    Message::Error(MessageError::Unknown(desc))
+                } else {
+                    Message::Error(MessageError::Unknown(String::from("Unknown error")))
+                }
             }
         },
         XpcType::Null => Message::Null,
